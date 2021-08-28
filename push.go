@@ -192,7 +192,6 @@ func (p *Pusher) toPromWriteRequest() (*prompb.WriteRequest, error) {
 				}
 				res = []prompb.TimeSeries{{Labels: labels, Samples: samples}}
 			}
-			fmt.Println(res)
 			promTs = append(promTs, res...)
 		}
 

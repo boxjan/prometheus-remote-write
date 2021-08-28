@@ -1,4 +1,4 @@
-module github.com/boxjan/prometheus-remote-push
+module github.com/boxjan/prometheus-remote-write
 
 go 1.16
 
