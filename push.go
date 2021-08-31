@@ -152,7 +152,7 @@ func (p *Pusher) push(method string) error {
 	}
 	defer resp.Body.Close()
 	// Depending on version and configuration of the PGW, StatusOK or StatusAccepted may be returned.
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+	if resp.StatusCode < 200 && resp.StatusCode > 299 {
 		body, _ := ioutil.ReadAll(resp.Body) // Ignore any further error as this is for an error message only.
 		return fmt.Errorf("unexpected status code %d while pushing to %s: %s", resp.StatusCode, p.url, body)
 	}
