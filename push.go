@@ -11,6 +11,7 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
+
 package push
 
 import (
@@ -24,7 +25,6 @@ import (
 	"github.com/prometheus/prometheus/prompb"
 	"io/ioutil"
 	"net/http"
-	"strings"
 	"time"
 )
 
@@ -34,38 +34,39 @@ type HTTPDoer interface {
 
 type Pusher struct {
 	error      error
-	url, job   string
+	urls       []string
 	gatherers  prometheus.Gatherers
 	registerer prometheus.Registerer
+	interval   int
 
 	client             HTTPDoer
 	useBasicAuth       bool
 	username, password string
 
-	expfmt expfmt.Format
-	labels map[string]string
+	expfmt    expfmt.Format
+	labels    map[string]string
+	snappyBuf *bytes.Buffer
 }
 
-func New(url string) *Pusher {
+func New() *Pusher {
 	var (
 		reg = prometheus.NewRegistry()
 	)
 
-	if !strings.Contains(url, "://") {
-		url = "http://" + url
-	}
-	if strings.HasSuffix(url, "/") {
-		url = url[:len(url)-1]
-	}
-
 	return &Pusher{
-		url:        url,
 		gatherers:  prometheus.Gatherers{reg},
 		registerer: reg,
 		client:     &http.Client{},
 		expfmt:     expfmt.FmtProtoDelim,
 		labels:     map[string]string{},
 	}
+}
+
+func (p *Pusher) BasicAuth(username, password string) *Pusher {
+	p.useBasicAuth = true
+	p.username = username
+	p.password = password
+	return p
 }
 
 // Push collects/gathers all metrics from all Collectors and Gatherers added to
@@ -77,15 +78,51 @@ func New(url string) *Pusher {
 //
 // Push returns the first error encountered by any method call (including this
 // one) in the lifetime of the Pusher.
-func (p *Pusher) Push() error {
-	return p.push(http.MethodPut)
+func (p *Pusher) Push(url string) error {
+	if err := p.Collect(); err != nil {
+		return err
+	}
+	return p.PushLocal(url)
 }
 
 // Add works like push, but only previously pushed metrics with the same name
 // (and the same job and other grouping labels) will be replaced. (It uses HTTP
 // method “POST” to push to the Pushgateway.)
-func (p *Pusher) Add() error {
-	return p.push(http.MethodPost)
+func (p *Pusher) Add(url string) error {
+	if err := p.Collect(); err != nil {
+		return err
+	}
+	return p.AddLocal(url)
+}
+
+// PushLocal push local snappy buffer to given url
+func (p *Pusher) PushLocal(url string) error {
+	return p.push(url, http.MethodPost)
+}
+
+// AddLocal add local snappy buffer to given url
+func (p *Pusher) AddLocal(url string) error {
+	return p.push(url, http.MethodPut)
+}
+
+// Collect will generate a prompb.WriteRequest with snappy compress and save in
+// memory, use PushLocal or AddLocal to write same.
+func (p *Pusher) Collect() error {
+	if p.error != nil {
+		return p.error
+	}
+	wr, err := p.toPromWriteRequest()
+	if err != nil {
+		return err
+	}
+	data, err := proto.Marshal(wr)
+	if err != nil {
+		return fmt.Errorf("unable to marshal protobuf: %v", err)
+	}
+
+	p.snappyBuf = &bytes.Buffer{}
+	p.snappyBuf.Write(snappy.Encode(nil, data))
+	return nil
 }
 
 // Gatherer adds a Gatherer to the Pusher, from which metrics will be gathered
@@ -118,23 +155,12 @@ func (p *Pusher) Collector(c prometheus.Collector) *Pusher {
 	return p
 }
 
-func (p *Pusher) push(method string) error {
-	if p.error != nil {
-		return p.error
-	}
-	wr, err := p.toPromWriteRequest()
-	if err != nil {
-		return err
-	}
-	data, err := proto.Marshal(wr)
-	if err != nil {
-		return fmt.Errorf("unable to marshal protobuf: %v", err)
+func (p *Pusher) push(url, method string) error {
+	if p.snappyBuf == nil || p.snappyBuf.Len() == 0 {
+		return fmt.Errorf("empty snappy buf")
 	}
 
-	snappyBuf := &bytes.Buffer{}
-	snappyBuf.Write(snappy.Encode(nil, data))
-
-	req, err := http.NewRequest(method, p.url, snappyBuf)
+	req, err := http.NewRequest(method, url, p.snappyBuf)
 	if err != nil {
 		return err
 	}
@@ -154,8 +180,9 @@ func (p *Pusher) push(method string) error {
 	// Depending on version and configuration of the PGW, StatusOK or StatusAccepted may be returned.
 	if resp.StatusCode < 200 && resp.StatusCode > 299 {
 		body, _ := ioutil.ReadAll(resp.Body) // Ignore any further error as this is for an error message only.
-		return fmt.Errorf("unexpected status code %d while pushing to %s: %s", resp.StatusCode, p.url, body)
+		return fmt.Errorf("unexpected status code %d while pushing to %s: %s", resp.StatusCode, url, body)
 	}
+
 	return nil
 }
 
