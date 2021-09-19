@@ -25,6 +25,7 @@ import (
 	"github.com/prometheus/prometheus/prompb"
 	"io/ioutil"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -158,6 +159,13 @@ func (p *Pusher) Collector(c prometheus.Collector) *Pusher {
 func (p *Pusher) push(url, method string) error {
 	if p.snappyBuf == nil || p.snappyBuf.Len() == 0 {
 		return fmt.Errorf("empty snappy buf")
+	}
+
+	if !strings.Contains(url, "://") {
+		url = "http://" + url
+	}
+	if strings.HasSuffix(url, "/") {
+		url = url[:len(url)-1]
 	}
 
 	req, err := http.NewRequest(method, url, p.snappyBuf)
