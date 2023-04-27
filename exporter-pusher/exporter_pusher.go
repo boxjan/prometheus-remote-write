@@ -15,12 +15,12 @@
 package exporter_pusher
 
 import (
+	"github.com/alecthomas/kingpin/v2"
 	push "github.com/boxjan/prometheus-remote-write"
 	"github.com/go-kit/kit/log"
 	"github.com/go-kit/kit/log/level"
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
-	"gopkg.in/alecthomas/kingpin.v2"
 	"os"
 	"strings"
 	"time"
