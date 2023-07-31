@@ -24,6 +24,7 @@ import (
 	"github.com/prometheus/common/expfmt"
 	"github.com/prometheus/prometheus/prompb"
 	"io/ioutil"
+	"math"
 	"net/http"
 	"strings"
 	"time"
@@ -219,11 +220,11 @@ func (p *Pusher) toPromWriteRequest() (*prompb.WriteRequest, error) {
 				labels := p.getMetricLabels(mf, m)
 				switch *mf.Type {
 				case io_prometheus_client.MetricType_COUNTER:
-					samples = append(samples, prompb.Sample{Value: *m.Counter.Value, Timestamp: t})
+					samples = append(samples, prompb.Sample{Value: m.GetCounter().GetValue(), Timestamp: t})
 				case io_prometheus_client.MetricType_GAUGE:
-					samples = append(samples, prompb.Sample{Value: *m.Gauge.Value, Timestamp: t})
+					samples = append(samples, prompb.Sample{Value: m.GetCounter().GetValue(), Timestamp: t})
 				case io_prometheus_client.MetricType_UNTYPED:
-					samples = append(samples, prompb.Sample{Value: *m.Untyped.Value, Timestamp: t})
+					samples = append(samples, prompb.Sample{Value: m.GetUntyped().GetValue(), Timestamp: t})
 				}
 				res = []prompb.TimeSeries{{Labels: labels, Samples: samples}}
 			}
@@ -240,42 +241,67 @@ func (p *Pusher) toPromWriteRequest() (*prompb.WriteRequest, error) {
 func (p *Pusher) parseMetricTypeSummary(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, t int64) []prompb.TimeSeries {
 	sum := p.getMetricTypeSummarySum(mf, m, t)
 	count := p.getMetricTypeSummaryCount(mf, m, t)
-	return []prompb.TimeSeries{sum, count}
+
+	var promTs = []prompb.TimeSeries{sum, count}
+	for _, q := range m.Summary.Quantile {
+		labels := p.getMetricLabels(mf, m)
+		labels = append(labels, prompb.Label{Name: "quantile", Value: fmt.Sprintf("%g", q.GetQuantile())})
+		samples := []prompb.Sample{{Value: q.GetValue(), Timestamp: t}}
+		promTs = append(promTs, prompb.TimeSeries{Labels: labels, Samples: samples})
+	}
+	return promTs
 }
 
 func (p *Pusher) parseMetricTypeHistogram(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, t int64) []prompb.TimeSeries {
 	sum := p.getMetricTypeHistogramSum(mf, m, t)
 	count := p.getMetricTypeHistogramCount(mf, m, t)
+
+	var promTs = []prompb.TimeSeries{sum, count}
+	for _, b := range m.GetHistogram().GetBucket() {
+		labels := p.getMetricLabels(mf, m)
+		labels = append(labels, prompb.Label{Name: "le", Value: fmt.Sprintf("%g", b.GetUpperBound())})
+		samples := []prompb.Sample{{Value: float64(b.GetCumulativeCount()), Timestamp: t}}
+		promTs = append(promTs, prompb.TimeSeries{Labels: labels, Samples: samples})
+	}
+	labels := p.getMetricLabels(mf, m)
+	labels = append(labels, prompb.Label{Name: "le", Value: fmt.Sprintf("%g", math.Inf(1))})
+	samples := []prompb.Sample{{Value: float64(m.GetHistogram().GetSampleCount()), Timestamp: t}}
+	promTs = append(promTs, prompb.TimeSeries{Labels: labels, Samples: samples})
 	return []prompb.TimeSeries{sum, count}
 }
 
-func (p *Pusher) getMetricTypeSummarySum(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, t int64) prompb.TimeSeries {
-	labels := p.getMetricLabels(mf, m)
-	labels = append(labels, prompb.Label{Name: "type", Value: "summary_sample_sum"})
-	return prompb.TimeSeries{Labels: labels, Samples: []prompb.Sample{{Value: *m.GetSummary().SampleSum, Timestamp: t}}}
-}
-
-func (p *Pusher) getMetricTypeSummaryCount(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, t int64) prompb.TimeSeries {
-	labels := p.getMetricLabels(mf, m)
-	labels = append(labels, prompb.Label{Name: "type", Value: "summary_sample_count"})
-	return prompb.TimeSeries{Labels: labels, Samples: []prompb.Sample{{Value: float64(*m.GetSummary().SampleCount), Timestamp: t}}}
-}
-
 func (p *Pusher) getMetricTypeHistogramSum(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, t int64) prompb.TimeSeries {
-	labels := p.getMetricLabels(mf, m)
-	labels = append(labels, prompb.Label{Name: "type", Value: "summary_sample_sum"})
-	return prompb.TimeSeries{Labels: labels, Samples: []prompb.Sample{{Value: *m.GetHistogram().SampleSum, Timestamp: t}}}
+	return prompb.TimeSeries{Labels: p.getMetricLabelsNameWithWithSuffix(mf, m, "sum"),
+		Samples: []prompb.Sample{{Value: m.GetHistogram().GetSampleSum(), Timestamp: t}}}
 }
 
 func (p *Pusher) getMetricTypeHistogramCount(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, t int64) prompb.TimeSeries {
-	labels := p.getMetricLabels(mf, m)
-	labels = append(labels, prompb.Label{Name: "type", Value: "summary_sample_count"})
-	return prompb.TimeSeries{Labels: labels, Samples: []prompb.Sample{{Value: float64(*m.GetHistogram().SampleCount), Timestamp: t}}}
+	return prompb.TimeSeries{Labels: p.getMetricLabelsNameWithWithSuffix(mf, m, "count"),
+		Samples: []prompb.Sample{{Value: float64(m.GetHistogram().GetSampleCount()), Timestamp: t}}}
+}
+
+func (p *Pusher) getMetricTypeSummarySum(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, t int64) prompb.TimeSeries {
+	return prompb.TimeSeries{Labels: p.getMetricLabelsNameWithWithSuffix(mf, m, "sum"),
+		Samples: []prompb.Sample{{Value: m.GetSummary().GetSampleSum(), Timestamp: t}}}
+}
+
+func (p *Pusher) getMetricTypeSummaryCount(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, t int64) prompb.TimeSeries {
+	return prompb.TimeSeries{Labels: p.getMetricLabelsNameWithWithSuffix(mf, m, "count"),
+		Samples: []prompb.Sample{{Value: float64(m.GetSummary().GetSampleCount()), Timestamp: t}}}
 }
 
 func (p *Pusher) getMetricLabels(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric) []prompb.Label {
+	return p.getMetricLabelsNameWithWithSuffix(mf, m, "")
+}
+
+func (p *Pusher) getMetricLabelsNameWithWithSuffix(mf *io_prometheus_client.MetricFamily, m *io_prometheus_client.Metric, suffix string) []prompb.Label {
 	labels := make([]prompb.Label, 0, 1)
-	labels = append(labels, prompb.Label{Name: "__name__", Value: mf.GetName()})
+	if suffix != "" {
+		if strings.HasPrefix(suffix, "_") {
+			suffix = "_" + suffix
+		}
+	}
+	labels = append(labels, prompb.Label{Name: "__name__", Value: mf.GetName() + suffix})
 	for _, l := range m.GetLabel() {
 		labels = append(labels, prompb.Label{Name: *l.Name, Value: *l.Value})
 	}
