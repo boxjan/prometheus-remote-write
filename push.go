@@ -222,7 +222,7 @@ func (p *Pusher) toPromWriteRequest() (*prompb.WriteRequest, error) {
 				case io_prometheus_client.MetricType_COUNTER:
 					samples = append(samples, prompb.Sample{Value: m.GetCounter().GetValue(), Timestamp: t})
 				case io_prometheus_client.MetricType_GAUGE:
-					samples = append(samples, prompb.Sample{Value: m.GetCounter().GetValue(), Timestamp: t})
+					samples = append(samples, prompb.Sample{Value: m.GetGauge().GetValue(), Timestamp: t})
 				case io_prometheus_client.MetricType_UNTYPED:
 					samples = append(samples, prompb.Sample{Value: m.GetUntyped().GetValue(), Timestamp: t})
 				}
